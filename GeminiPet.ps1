@@ -32,6 +32,8 @@ Add-Type -AssemblyName WindowsBase
 try { Add-Type -AssemblyName System.Xaml } catch { }
 
 $script:LogPath = Join-Path $env:TEMP 'GeminiPet.log'
+$socialPath = Join-Path $PSScriptRoot 'social.ps1'
+if (Test-Path -LiteralPath $socialPath) { . $socialPath }
 function Write-PetLog([string]$msg) {
     try { Add-Content -LiteralPath $script:LogPath -Value ('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $msg) -Encoding UTF8 } catch { }
 }
@@ -576,6 +578,54 @@ function Invoke-Pat {
 }
 
 # ---------------------------------------------------------------- 每帧更新
+# ---------------------------------------------------------------- 三只桌宠联动
+function Initialize-PetSocial {
+    if ($script:SocialReady) { return $true }
+    if (-not (Get-Command Connect-PetSocial -ErrorAction SilentlyContinue)) { $script:SocialReady = $true; return $false }
+    $script:SocialLookX = 0.0; $script:SocialLookY = 0.0; $script:SocialTilt = 0.0
+    $hooks = @{
+        Greet = {
+            param($n)
+            $script:IdleSince = $script:T
+            Wake-Pet
+            Start-Action 'wave'
+            $script:ExprForce = 'happy'; $script:ExprUntil = $script:T + 1.7
+            Spawn-Hearts 4
+            Spawn-Burst 5
+        }
+        Play = {
+            param($n)
+            $script:IdleSince = $script:T
+            Wake-Pet
+            Start-Action 'spin'
+            $script:ExprForce = 'happy'; $script:ExprUntil = $script:T + 1.4
+            Spawn-Burst 8
+        }
+        LookAt = {
+            param($x, $y)
+            $script:SocialLookX = $x
+            $script:SocialLookY = $y
+            $script:SocialTilt = [Math]::Max(-4.0, [Math]::Min(4.0, $x * 0.5))
+        }
+        MoveTo = {
+            param($x)
+            $script:IdleSince = $script:T
+            Start-Action 'wander'
+            $script:WanderFrom = $script:Win.Left
+            $script:WanderTo = $x
+            $script:WanderDir = [Math]::Sign($x - $script:Win.Left)
+        }
+        Busy = { $script:State -ne 'idle' }
+        Sleepy = { [bool]$script:Sleepy }
+    }
+    if (-not (Connect-PetSocial -SelfId 'gemini' -Hooks $hooks)) { $script:SocialReady = $true; return $false }
+    $script:SocialReady = $true
+    return $true
+}
+function Update-PetSocialTick([double]$dt) {
+    if (-not $script:SocialReady) { if (-not (Initialize-PetSocial)) { return } }
+    try { Invoke-PetSocial -Dt $dt -Win $script:Win -Hooks $script:PetSocialHooks } catch { Write-PetLog "联动异常: $_" }
+}
 function Update-Pet([double]$dt) {
     $script:T += $dt
     $script:StateT += $dt
@@ -709,15 +759,26 @@ function Update-Pet([double]$dt) {
     if ($script:T -ge $script:ExprUntil -and $script:ExprForce -ne '') { $script:ExprForce = '' }
     Set-Expression $expr
 
+    # ---- 三只桌宠联动(感知同伴, 打招呼/对视/一起玩/串门) ----
+    Update-PetSocialTick $dt
+
+    # 兜底: NaN / Infinity 一旦写进变换, 元素就直接不渲染了
+    if ([double]::IsNaN($rot) -or [double]::IsInfinity($rot)) { $rot = 0.0 }
+    if ([double]::IsNaN($sx) -or [double]::IsInfinity($sx) -or $sx -le 0.01) { $sx = 1.0 }
+    if ([double]::IsNaN($sy) -or [double]::IsInfinity($sy) -or $sy -le 0.01) { $sy = 1.0 }
+    if ([double]::IsNaN($oy) -or [double]::IsInfinity($oy)) { $oy = 0.0 }
+    if ([double]::IsNaN($lookX) -or [double]::IsInfinity($lookX)) { $lookX = 0.0 }
+    if ([double]::IsNaN($lookY) -or [double]::IsInfinity($lookY)) { $lookY = 0.0 }
+
     # ---- 应用到界面 ----
-    $TRot.Angle = $rot
+    $TRot.Angle = $rot + $script:SocialTilt
     $TScale.ScaleX = $sx
     $TScale.ScaleY = $sy
     $TTrans.X = $ox
     $TTrans.Y = $oy
     $EyeScale.ScaleY = $script:EyeBase * $blink
-    $EyeLook.X = $lookX
-    $EyeLook.Y = $lookY
+    $EyeLook.X = $lookX + $script:SocialLookX
+    $EyeLook.Y = $lookY + $script:SocialLookY
     $ArmLRot.Angle = $armLA
     $ArmRRot.Angle = $armRA
     $Blush.Opacity = [Math]::Max(0.0, [Math]::Min(1.0, $blushAmt))
