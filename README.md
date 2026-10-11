@@ -116,7 +116,7 @@ GeminiPet\
 ├─ preview\             12 张动作/表情预览图 + 桌面实拍 + 预览合集.png
 └─ tools\
    ├─ shot.ps1          开发用:截屏 / 模拟点击拖动,验证交互是否正常
-   └─ make_assets.py    开发用:由预览图生成图标与合集图
+   └─ make_assets.ps1    开发用:由预览图生成图标与合集图
 ```
 
 ---
