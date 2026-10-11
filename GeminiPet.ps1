@@ -629,6 +629,13 @@ function Initialize-PetSocial {
         Busy = { $script:State -ne 'idle' }
         Sleepy = { [bool]$script:Sleepy }
         StopMove = { End-State }
+        Gift = {
+            param($n)
+            $script:IdleSince = $script:T
+            Wake-Pet
+            $script:ExprForce = 'happy'; $script:ExprUntil = $script:T + 1.5
+            Spawn-Hearts 3; Spawn-Burst 3
+        }
         Say = {
             param($t)
             $SayText.Text = $t
@@ -641,9 +648,17 @@ function Initialize-PetSocial {
             Visit = @('我飞过来啦', '在忙吗？')
             Pat   = @('好痒~', '嘿嘿')
             Idle  = @('✨', '在的~', '……发呆中', '今天也闪闪的')
+            Hello = @('嗨，{you}！')
+            HelloReply = @('嗨！{me}~')
+            Follow = @('今天过得怎么样？')
+            FollowReply = @('还不错~')
+            Bye = @('回头见~')
+            Gift = @('送你一颗小心心 ❤')
+            GiftReply = @('谢谢{you}！')
+            Chase = @('等等我！')
         }
     }
-    if (-not (Connect-PetSocial -SelfId 'gemini' -Hooks $hooks)) { $script:SocialReady = $true; return $false }
+    if (-not (Connect-PetSocial -SelfId 'gemini' -Hooks $hooks -LinesPath (Join-Path $PSScriptRoot 'lines.json'))) { $script:SocialReady = $true; return $false }
     $script:SocialReady = $true
     return $true
 }
