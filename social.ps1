@@ -23,9 +23,9 @@
 
 try { Add-Type -AssemblyName System.IO.MemoryMappedFiles -ErrorAction Stop } catch { }
 
-$script:PetSocialMmfName = 'DesktopPets.Interop.v2'
+$script:PetSocialMmfName = 'DesktopPets.Interop.v3'
 $script:PetSocialCapacity = 256
-$script:PetSocialSlotSize = 48
+$script:PetSocialSlotSize = 64
 $script:PetSocialIds = @{ 'gemini' = 0; 'deepseek' = 1; 'chatgpt' = 2 }
 $script:PetSocialNames = @{ 'gemini' = '小星星'; 'deepseek' = '小鲸鱼'; 'chatgpt' = '小花' }
 $script:PetSocialBitAlive = 1
@@ -45,6 +45,10 @@ $script:PetSocialTalkGift = 6
 $script:PetSocialTalkGiftReply = 7
 $script:PetSocialTalkChase = 8
 $script:PetSocialTalkCatch = 9
+$script:PetSocialTalkAngry = 10
+$script:PetSocialTalkSorry = 11
+$script:PetSocialTalkMakeup = 12
+$script:PetSocialBitAngry = 64
 
 # ---------------------------------------------------------------- 台词表(外置 lines.json)
 function Import-PetSocialLines {
@@ -62,7 +66,20 @@ function Import-PetSocialLines {
                     if ($arr.Count -gt 0) { $lines[$p.Name] = $arr }
                 }
             }
-            Write-PetLog "联动: 已载入外置台词表 $(Split-Path -Leaf $JsonPath)"
+            if ($obj.topics) {
+                foreach ($tp in $obj.topics) {
+                    if (-not $tp.name) { continue }
+                    $script:PetSocialTopics += , @{
+                        Name = [string]$tp.name
+                        Open = @($tp.open | Where-Object { $_ })
+                        Reply = @($tp.reply | Where-Object { $_ })
+                        Follow = @($tp.follow | Where-Object { $_ })
+                        FollowReply = @($tp.followReply | Where-Object { $_ })
+                        Bye = @($tp.bye | Where-Object { $_ })
+                    }
+                }
+            }
+            Write-PetLog "联动: 已载入外置台词表 $(Split-Path -Leaf $JsonPath)($($script:PetSocialTopics.Count) 个话题)"
         } catch { Write-PetLog "联动: 台词表读取失败($_)，改用内置台词" }
     }
     $script:PetSocialLines = $lines
@@ -121,6 +138,14 @@ function Connect-PetSocial {
     $script:PetSocialConvoUntil = -99.0
     $script:PetSocialPending = $null
     $script:PetSocialLastConvo = -99.0
+    $script:PetSocialTopics = @()
+    $script:PetSocialTopicIdx = -1
+    $script:PetSocialTopicStamp = 0
+    $script:PetSocialTopicMemory = @{}
+    $script:PetSocialAnger = @{}
+    $script:PetSocialAngryUntil = -99.0
+    $script:PetSocialLastSorry = -99.0
+    $script:PetSocialLastAngerDecay = 0.0
     Import-PetSocialLines -Defaults $Hooks.Lines -JsonPath $LinesPath | Out-Null
     Write-PetLog "联动: 已连接 v2(槽位 $($script:PetSocialSelfIdx), 名字 $($script:PetSocialNames[$SelfId]))"
     return $true
@@ -144,6 +169,8 @@ function Publish-PetSocialState {
         $script:PetSocialAcc.Write($b + 28, $script:PetSocialTalkSeq)
         $script:PetSocialAcc.Write($b + 32, $script:PetSocialTalkTo)
         $script:PetSocialAcc.Write($b + 36, $script:PetSocialTalkStamp)
+        $script:PetSocialAcc.Write($b + 40, $script:PetSocialTopicIdx)
+        $script:PetSocialAcc.Write($b + 44, $script:PetSocialTopicStamp)
     } catch { }
 }
 
@@ -165,15 +192,43 @@ function Get-PetSocialNeighbors {
             $tq = $script:PetSocialAcc.ReadInt32($b + 28)
             $tt = $script:PetSocialAcc.ReadInt32($b + 32)
             $tst = $script:PetSocialAcc.ReadInt32($b + 36)
+            $tid = $script:PetSocialAcc.ReadInt32($b + 40)
         } catch { continue }
         if ([Math]::Abs($now - $ts) -gt $script:PetSocialMaxAgeMs -or $w -le 0 -or $h -le 0) { continue }
         $list += @{
             Id = $kv.Key; Index = $kv.Value; X = $x; Y = $y; W = $w; H = $h; Flags = $fl
             Age = [Math]::Abs($now - $ts); TalkKind = $tk; TalkSeq = $tq; TalkTo = $tt
-            TalkStamp = $tst; TalkAge = [Math]::Abs($now - $tst)
+            TalkStamp = $tst; TalkAge = [Math]::Abs($now - $tst); TopicIdx = $tid
         }
     }
     return $list
+}
+
+# ---------------------------------------------------------------- 话题(话题记忆)
+function Get-PetSocialTopic {
+    param([string]$Partner)
+    if ($script:PetSocialTopics.Count -eq 0) { return -1 }
+    $n = $script:PetSocialTopics.Count
+    if ($n -eq 1) { return 0 }
+    $last = -1
+    if ($script:PetSocialTopicMemory.ContainsKey($Partner)) { $last = $script:PetSocialTopicMemory[$Partner] }
+    for ($k = 0; $k -lt 8; $k++) {
+        $c = $script:Rng.Next(0, $n)
+        if ($c -ne $last) { return $c }
+    }
+    return ($last + 1) % $n
+}
+function Get-PetSocialTopicLine {
+    param([int]$TopicIdx, [string]$TopicKind, [string]$ToId)
+    if ($TopicIdx -lt 0 -or $TopicIdx -ge $script:PetSocialTopics.Count) { return $null }
+    $tp = $script:PetSocialTopics[$TopicIdx]
+    if (-not $tp.ContainsKey($TopicKind)) { return $null }
+    $arr = @($tp[$TopicKind])
+    if ($arr.Count -eq 0) { return $null }
+    $txt = [string]$arr[$script:Rng.Next(0, $arr.Count)]
+    $meName = $script:PetSocialNames[$script:PetSocialSelfId]
+    $youName = if ($ToId -and $script:PetSocialNames.ContainsKey($ToId)) { $script:PetSocialNames[$ToId] } else { '你' }
+    return $txt.Replace('{me}', $meName).Replace('{you}', $youName)
 }
 
 # ---------------------------------------------------------------- 说话 / 气泡
@@ -193,8 +248,10 @@ function Update-PetSayState {
 }
 # 说一句"对话台词"并写进共享内存, 让同伴知道我说了哪一类
 function Say-PetSocialTalk {
-    param([string]$Kind, [string]$ToId, [int]$KindCode, [double]$Seconds = 2.6)
-    $txt = Get-PetSocialLine -Kind $Kind -ToId $ToId
+    param([string]$Kind, [string]$ToId, [int]$KindCode, [double]$Seconds = 2.6, [int]$Topic = -1, [string]$TopicKind = '')
+    $txt = $null
+    if ($Topic -ge 0 -and $TopicKind) { $txt = Get-PetSocialTopicLine -TopicIdx $Topic -TopicKind $TopicKind -ToId $ToId }
+    if (-not $txt) { $txt = Get-PetSocialLine -Kind $Kind -ToId $ToId }
     if (-not $txt) { return $false }
     $script:PetSocialTalkSeq++
     $script:PetSocialTalkKind = $KindCode
@@ -208,10 +265,23 @@ function Say-PetSocialTalk {
 function Start-PetSocialConvo {
     param($N, [double]$Now)
     $script:PetSocialLastConvo = $Now
-    $script:PetSocialConvo = @{ With = $N.Id; Stage = 'hello'; At = $Now + 1.6 }
-    $script:PetSocialConvoUntil = $Now + 9.0
-    Say-PetSocialTalk -Kind 'Hello' -ToId $N.Id -KindCode $script:PetSocialTalkHello 2.8 | Out-Null
-    Write-PetLog "对话: 我先跟 $($N.Id) 开口"
+    $topic = Get-PetSocialTopic -Partner $N.Id
+    $script:PetSocialTopicIdx = $topic
+    $script:PetSocialTopicStamp = [int][Environment]::TickCount
+    if ($topic -ge 0) { $script:PetSocialTopicMemory[$N.Id] = $topic }
+    $topicName = if ($topic -ge 0) { $script:PetSocialTopics[$topic].Name } else { '(无话题)' }
+    $resume = $false
+    if ($script:PetSocialTopicMemory.ContainsKey($N.Id + '|open')) { $resume = $true }
+    if ($resume) {
+        Say-PetSocialTalk -Kind 'Resume' -ToId $N.Id -KindCode $script:PetSocialTalkHello -Seconds 2.8 -Topic $topic -TopicKind 'Open' | Out-Null
+        Write-PetLog "对话: 接着跟 $($N.Id) 聊「$topicName」(话题记忆)"
+    } else {
+        Say-PetSocialTalk -Kind 'Hello' -ToId $N.Id -KindCode $script:PetSocialTalkHello -Seconds 2.8 -Topic $topic -TopicKind 'Open' | Out-Null
+        Write-PetLog "对话: 跟 $($N.Id) 开了个话题「$topicName」"
+    }
+    $script:PetSocialTopicMemory[$N.Id + '|open'] = @{ At = $Now; Topic = $topic }
+    $script:PetSocialConvo = @{ With = $N.Id; Stage = 'hello'; At = $Now + 1.8; Topic = $topic }
+    $script:PetSocialConvoUntil = $Now + 12.0
 }
 function Update-PetSocialTalk {
     param($N, [double]$Now)
@@ -219,7 +289,9 @@ function Update-PetSocialTalk {
     if ($script:PetSocialPending -and $Now -ge $script:PetSocialPending.At) {
         $p = $script:PetSocialPending
         $script:PetSocialPending = $null
-        Say-PetSocialTalk -Kind $p.KindName -ToId $p.To -KindCode $p.KindCode 2.6 | Out-Null
+        $tk = ''
+        if ($p.ContainsKey('TopicKind')) { $tk = [string]$p.TopicKind }
+        Say-PetSocialTalk -Kind $p.KindName -ToId $p.To -KindCode $p.KindCode -Seconds 2.6 -Topic ([int]$p.Topic) -TopicKind $tk | Out-Null
         Write-PetLog "对话: 回了 $($p.KindName) 给 $($p.To)"
         if ($p.KindName -eq 'HelloReply' -and -not $script:PetSocialConvo) {
             $script:PetSocialConvo = @{ With = $p.To; Stage = 'replied'; At = $Now + 3.5 }
@@ -235,16 +307,17 @@ function Update-PetSocialTalk {
             $script:PetSocialSeenSeq[$N.Index] = $N.TalkSeq
             switch ($N.TalkKind) {
                 $script:PetSocialTalkHello {
-                    $script:PetSocialPending = @{ To = $N.Id; Kind = $script:PetSocialTalkHelloReply; KindName = 'HelloReply'; At = $Now + (Rand 0.4 1.1) }
+                    $script:PetSocialPending = @{ To = $N.Id; Kind = $script:PetSocialTalkHelloReply; KindName = 'HelloReply'; At = $Now + (Rand 0.4 1.1); Topic = $N.TopicIdx; TopicKind = 'Reply' }
                 }
                 $script:PetSocialTalkFollow {
-                    $script:PetSocialPending = @{ To = $N.Id; Kind = $script:PetSocialTalkFollowReply; KindName = 'FollowReply'; At = $Now + (Rand 0.4 1.1) }
+                    $script:PetSocialPending = @{ To = $N.Id; Kind = $script:PetSocialTalkFollowReply; KindName = 'FollowReply'; At = $Now + (Rand 0.4 1.1); Topic = $N.TopicIdx; TopicKind = 'FollowReply' }
                 }
                 $script:PetSocialTalkBye {
                     if ($script:Rng.NextDouble() -lt 0.6) {
-                        $script:PetSocialPending = @{ To = $N.Id; Kind = $script:PetSocialTalkBye; KindName = 'Bye'; At = $Now + (Rand 0.3 0.9) }
+                        $script:PetSocialPending = @{ To = $N.Id; Kind = $script:PetSocialTalkBye; KindName = 'Bye'; At = $Now + (Rand 0.3 0.9); Topic = $N.TopicIdx; TopicKind = 'Bye' }
                     }
                     $script:PetSocialConvo = $null
+                    $script:PetSocialTopicMemory.Remove($N.Id + '|open')
                 }
                 $script:PetSocialTalkGift {
                     if ($Now -gt $script:PetSocialGiftUntil) {
@@ -252,9 +325,28 @@ function Update-PetSocialTalk {
                         if ($script:PetSocialHooks.Gift) { try { & $script:PetSocialHooks.Gift $N } catch { } }
                         $script:PetSocialPending = @{ To = $N.Id; Kind = $script:PetSocialTalkGiftReply; KindName = 'GiftReply'; At = $Now + (Rand 0.5 1.3) }
                         Write-PetLog "对话: 收到 $($N.Id) 送的小心心"
+                        if ($script:PetSocialAnger.ContainsKey($N.Id)) {
+                            $script:PetSocialAnger[$N.Id] = [Math]::Max(0, $script:PetSocialAnger[$N.Id] - 2)
+                            if ($script:PetSocialAnger[$N.Id] -le 0 -and $script:PetSocialAngryUntil -gt 0) {
+                                $script:PetSocialAngryUntil = -99.0
+                                if ($script:PetSocialHooks.Makeup) { try { & $script:PetSocialHooks.Makeup $N } catch { } }
+                                Say-PetSocialTalk -Kind 'Makeup' -ToId $N.Id -KindCode $script:PetSocialTalkMakeup 2.8 | Out-Null
+                                Write-PetLog "和好: 原谅 $($N.Id) 了(气消了)"
+                            }
+                        }
                     }
                 }
                 $script:PetSocialTalkChase {
+                    $script:PetSocialAnger[$N.Id] = ([int]$script:PetSocialAnger[$N.Id]) + 1
+                    if ($script:PetSocialAnger[$N.Id] -ge 3 -and $script:PetSocialAngryUntil -lt $Now) {
+                        $script:PetSocialAngryUntil = $Now + 50.0
+                        if ($script:PetSocialHooks.Angry) { try { & $script:PetSocialHooks.Angry $N } catch { } }
+                        Say-PetSocialTalk -Kind 'Angry' -ToId $N.Id -KindCode $script:PetSocialTalkAngry 2.6 | Out-Null
+                        Write-PetLog "吵架: 被 $($N.Id) 追烦了, 生气了(不理它)"
+                        $side = if ($script:PetSocialWin.Left -lt $N.X) { 1.0 } else { -1.0 }
+                        if ($script:PetSocialHooks.MoveTo) { & $script:PetSocialHooks.MoveTo (Get-PetSocialTargetX -Win $script:PetSocialWin -X ($script:PetSocialWin.Left + $side * $script:PetSocialWin.Width * 1.6)) }
+                        return $true
+                    }
                     if ($script:Rng.NextDouble() -lt 0.45) {
                         $side = if ($script:PetSocialWin.Left -lt $N.X) { 1.0 } else { -1.0 }
                         $tgt = Get-PetSocialTargetX -Win $script:PetSocialWin -X ($script:PetSocialWin.Left + $side * $script:PetSocialWin.Width * 1.8)
@@ -292,11 +384,12 @@ function Update-PetSocialTalk {
                 'hello' { $script:PetSocialConvo = $null }        # 对方没回, 算了
                 'waitFollowReply' {
                     if ($script:Rng.NextDouble() -lt 0.75) {
-                        Say-PetSocialTalk -Kind 'Follow' -ToId $c.With -KindCode $script:PetSocialTalkFollow 2.6 | Out-Null
+                        Say-PetSocialTalk -Kind 'Follow' -ToId $c.With -KindCode $script:PetSocialTalkFollow -Seconds 2.6 -Topic ($c.Topic) -TopicKind 'Follow' | Out-Null
                         Write-PetLog "对话: 又跟 $($c.With) 聊了一句"
                         $script:PetSocialConvo = @{ With = $c.With; Stage = 'awaitFollowReply'; At = $Now + 2.2 }
                     } else {
-                        Say-PetSocialTalk -Kind 'Bye' -ToId $c.With -KindCode $script:PetSocialTalkBye 2.2 | Out-Null
+                        Say-PetSocialTalk -Kind 'Bye' -ToId $c.With -KindCode $script:PetSocialTalkBye -Seconds 2.2 -Topic ($c.Topic) -TopicKind 'Bye' | Out-Null
+                        $script:PetSocialTopicMemory.Remove($c.With + '|open')
                         Write-PetLog "对话: 跟 $($c.With) 道别"
                         $script:PetSocialConvo = $null
                     }
@@ -352,6 +445,7 @@ function Invoke-PetSocial {
     if ($sleepy) { $fl = $fl -bor $script:PetSocialBitSleep }
     if ($busy) { $fl = $fl -bor $script:PetSocialBitBusy }
     if ($script:PetSocialChasing) { $fl = $fl -bor $script:PetSocialBitChase }
+    if ($script:PetSocialAngryUntil -gt $now) { $fl = $fl -bor $script:PetSocialBitAngry }
     Publish-PetSocialState -Win $Win -Flags $fl -Now $now
 
     $ns = Get-PetSocialNeighbors
@@ -390,6 +484,30 @@ function Invoke-PetSocial {
     $theyPlay = ($n.Flags -band $script:PetSocialBitPlay) -ne 0
 
     if (Update-PetSocialTalk -N $n -Now $now) { return }
+
+    # 情绪: 生气值慢慢消退
+    if ($now -gt ($script:PetSocialLastAngerDecay + 45.0)) {
+        $script:PetSocialLastAngerDecay = $now
+        foreach ($kk in @($script:PetSocialAnger.Keys)) { $script:PetSocialAnger[$kk] = [Math]::Max(0, [int]$script:PetSocialAnger[$kk] - 1) }
+    }
+    # 对方还在生气 -> 道歉 + 送颗心
+    if (($n.Flags -band $script:PetSocialBitAngry) -ne 0 -and ($now - $script:PetSocialLastSorry) -gt 25) {
+        $script:PetSocialLastSorry = $now
+        $script:PetSocialChasing = $false
+        if ($script:PetSocialHooks.Gift) { try { & $script:PetSocialHooks.Gift $n } catch { } }
+        Say-PetSocialTalk -Kind 'Sorry' -ToId $n.Id -KindCode $script:PetSocialTalkSorry 2.6 | Out-Null
+        Write-PetLog "和解: 跟 $($n.Id) 道歉并送了颗小心心"
+        return
+    }
+    # 自己在生气 -> 不玩也不理, 躲远点
+    if ($script:PetSocialAngryUntil -gt $now) {
+        if ($near -and ($now - $script:PetSocialLastAside) -gt 6) {
+            $script:PetSocialLastAside = $now
+            $side = if ($meX -lt $ncx) { -1.0 } else { 1.0 }
+            & $Hooks.MoveTo (Get-PetSocialTargetX -Win $Win -X ($Win.Left + $side * $Win.Width * 1.3))
+        }
+        return
+    }
 
     if ($theyPlay -and -not $busy -and -not $sleepy -and ($now - $script:PetSocialLastPlay) -gt 6) {
         $script:PetSocialLastPlay = $now

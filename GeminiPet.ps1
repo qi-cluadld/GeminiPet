@@ -629,6 +629,19 @@ function Initialize-PetSocial {
         Busy = { $script:State -ne 'idle' }
         Sleepy = { [bool]$script:Sleepy }
         StopMove = { End-State }
+        Angry = {
+            param($n)
+            $script:IdleSince = $script:T
+            $script:ExprForce = 'surprised'; $script:ExprUntil = $script:T + 1.6
+            Start-Action 'stretch'; Spawn-Burst 3
+        }
+        Makeup = {
+            param($n)
+            $script:IdleSince = $script:T
+            Wake-Pet
+            $script:ExprForce = 'happy'; $script:ExprUntil = $script:T + 1.8
+            Start-Action 'wave'; Spawn-Hearts 5
+        }
         Gift = {
             param($n)
             $script:IdleSince = $script:T
