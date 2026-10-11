@@ -300,6 +300,15 @@ $xaml = @'
     </Canvas>
   </Canvas>
 
+  <!-- 说话气泡(放在 PetWrap 之外, 所以不会跟着宠物一起旋转) -->
+  <Border x:Name="SayBubble" Canvas.Left="16" Canvas.Top="2" MaxWidth="208" CornerRadius="14"
+          Background="#F2FFFFFF" BorderBrush="#4DA07BFF" BorderThickness="1.2" Padding="10,6"
+          Visibility="Collapsed" IsHitTestVisible="False">
+    <Border.Effect>
+      <DropShadowEffect Color="#4D2B1B5E" BlurRadius="10" ShadowDepth="2" Direction="270" Opacity="0.45"/>
+    </Border.Effect>
+    <TextBlock x:Name="SayText" FontFamily="Microsoft YaHei UI" FontSize="14" Foreground="#FF1B2745" TextWrapping="Wrap"/>
+  </Border>
   <Canvas x:Name="OrbitLayer" Width="240" Height="240" IsHitTestVisible="False"/>
   <Canvas x:Name="ParticleLayer" Width="240" Height="240" IsHitTestVisible="False"/>
 </Canvas>
@@ -325,6 +334,7 @@ $EyeOpen = N 'EyeOpen'; $EyeHappy = N 'EyeHappy'; $EyeScale = N 'EyeScale'; $Eye
 $Mouth = N 'Mouth'; $MouthSmile = N 'MouthSmile'; $MouthFlat = N 'MouthFlat'; $MouthOpen = N 'MouthOpen'
 $Blush = N 'Blush'
 $OrbitLayer = N 'OrbitLayer'; $ParticleLayer = N 'ParticleLayer'
+$SayBubble = N 'SayBubble'; $SayText = N 'SayText'
 
 # ---------------------------------------------------------------- 计时元素
 $script:Orbit = New-Object System.Collections.ArrayList
@@ -569,6 +579,7 @@ function Invoke-Pat {
     $script:PatCount++
     $script:PatT = 0.0
     $script:ExprForce = 'happy'; $script:ExprUntil = $script:T + 1.1
+    Say-IfSocial 'Pat'
     Spawn-Hearts 5
     $roll = $script:Rng.NextDouble()
     if ($roll -lt 0.30) { Start-Action 'hop' }
@@ -617,10 +628,30 @@ function Initialize-PetSocial {
         }
         Busy = { $script:State -ne 'idle' }
         Sleepy = { [bool]$script:Sleepy }
+        StopMove = { End-State }
+        Say = {
+            param($t)
+            $SayText.Text = $t
+            $SayBubble.Visibility = 'Visible'
+        }
+        HideSay = { $SayBubble.Visibility = 'Collapsed' }
+        Lines = @{
+            Greet = @('嗨！', '你好呀 ✨', '嘿！')
+            Play  = @('一起玩！', '看我转圈！')
+            Visit = @('我飞过来啦', '在忙吗？')
+            Pat   = @('好痒~', '嘿嘿')
+            Idle  = @('✨', '在的~', '……发呆中', '今天也闪闪的')
+        }
     }
     if (-not (Connect-PetSocial -SelfId 'gemini' -Hooks $hooks)) { $script:SocialReady = $true; return $false }
     $script:SocialReady = $true
     return $true
+}
+function Say-IfSocial([string]$Kind) {
+    if (-not $script:SocialReady) { return }
+    if (-not (Get-Command Say-PetThing -ErrorAction SilentlyContinue)) { return }
+    $ln = Get-PetSocialLine $Kind
+    if ($ln) { Say-PetThing $ln 2.3 }
 }
 function Update-PetSocialTick([double]$dt) {
     if (-not $script:SocialReady) { if (-not (Initialize-PetSocial)) { return } }

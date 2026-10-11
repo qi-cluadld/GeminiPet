@@ -56,6 +56,8 @@ function Connect-PetSocial {
     $script:PetSocialLookY = 0.0
     $script:PetSocialTilt = 0.0
     $script:PetSocialSeen = @{}
+    $script:PetSocialSayUntil = -1.0
+    $script:PetSocialNextChatter = 45.0
     Write-PetLog "联动: 已连接(槽位 $($script:PetSocialSelfIdx))"
     return $true
 }
@@ -98,10 +100,61 @@ function Get-PetSocialNeighbors {
     return $list
 }
 
+# ---------------------------------------------------------------- 说话气泡 & 边界保护
+function Get-PetSocialLine {
+    param([string]$Kind)
+    if (-not $script:PetSocialReady -or -not $script:PetSocialHooks) { return $null }
+    $lines = $script:PetSocialHooks.Lines
+    if (-not $lines -or -not $lines.ContainsKey($Kind)) { return $null }
+    $arr = @($lines[$Kind])
+    if ($arr.Count -eq 0) { return $null }
+    return [string]$arr[$script:Rng.Next(0, $arr.Count)]
+}
+function Say-PetThing {
+    param([string]$Text, [double]$Seconds = 2.6)
+    if (-not $script:PetSocialReady -or -not $Text) { return }
+    if ($script:T -lt $script:PetSocialSayUntil) { return }        # 正在说话就不打断
+    $script:PetSocialSayUntil = $script:T + $Seconds
+    try { & $script:PetSocialHooks.Say $Text } catch { }
+}
+function Update-PetSayState {
+    if (-not $script:PetSocialReady) { return }
+    if ($script:PetSocialSayUntil -gt 0 -and $script:T -gt $script:PetSocialSayUntil) {
+        $script:PetSocialSayUntil = -1.0
+        try { & $script:PetSocialHooks.HideSay } catch { }
+    }
+}
+# 把联动算出来的移动目标夹在工作区内, 否则会把宠物送出屏幕
+function Get-PetSocialTargetX {
+    param($Win, [double]$X)
+    $wa = [System.Windows.SystemParameters]::WorkArea
+    $minX = $wa.Left + 8.0
+    $maxX = $wa.Right - $Win.Width - 8.0
+    if ($maxX -lt $minX) { return $Win.Left }
+    return [Math]::Max($minX, [Math]::Min($maxX, $X))
+}
+# 万一宠物中心跑出工作区(联动/拖动/改分辨率), 自动拉回来
+function Protect-PetOnScreen {
+    param($Win, $Hooks)
+    $wa = [System.Windows.SystemParameters]::WorkArea
+    $cx = $Win.Left + $Win.Width / 2.0
+    $cy = $Win.Top + $Win.Height / 2.0
+    if ($cx -ge $wa.Left -and $cx -le $wa.Right -and $cy -ge $wa.Top -and $cy -le $wa.Bottom) { return $false }
+    try { & $Hooks.StopMove } catch { }
+    if ($cx -lt $wa.Left) { $Win.Left = $wa.Left + 6.0 }
+    elseif ($cx -gt $wa.Right) { $Win.Left = $wa.Right - $Win.Width - 6.0 }
+    if ($cy -lt $wa.Top) { $Win.Top = $wa.Top + 6.0 }
+    elseif ($cy -gt $wa.Bottom) { $Win.Top = $wa.Bottom - $Win.Height - 6.0 }
+    Write-PetLog "边界保护: 自己跑出桌面了, 已自动拉回"
+    return $true
+}
+
 function Invoke-PetSocial {
     param([double]$Dt, $Win, $Hooks)
     if (-not $script:PetSocialReady) { return }
     $now = $script:T
+    Protect-PetOnScreen -Win $Win -Hooks $Hooks | Out-Null
+    Update-PetSayState
     $busy = [bool](& $Hooks.Busy)
     $sleepy = [bool](& $Hooks.Sleepy)
     $fl = $script:PetSocialBitAlive
@@ -148,10 +201,17 @@ function Invoke-PetSocial {
         $script:PetSocialPlaying = $true
         $script:PetSocialPlayUntil = $now + 1.8
         & $Hooks.Play $n
+        Say-PetThing (Get-PetSocialLine 'Play') 2.4
         Write-PetLog "联动: 跟着 $($n.Id) 一起玩"
         return
     }
     if ($script:PetSocialPlaying -and $now -gt $script:PetSocialPlayUntil) { $script:PetSocialPlaying = $false }
+
+    # 一个人待着时偶尔自言自语
+    if (-not $busy -and -not $sleepy -and -not $near -and $now -gt $script:PetSocialNextChatter) {
+        $script:PetSocialNextChatter = $now + (Rand 50 120)
+        Say-PetThing (Get-PetSocialLine 'Idle') 2.4
+    }
 
     # 由远变近 -> 打招呼
     if ($near -and -not $script:PetSocialNear) {
@@ -160,6 +220,7 @@ function Invoke-PetSocial {
             $script:PetSocialLastGreet = $now
             $script:PetSocialLastPlay = $now - 26.0     # 打完招呼很快就能一起玩
             & $Hooks.Greet $n
+            Say-PetThing (Get-PetSocialLine 'Greet') 2.8
             Write-PetLog "联动: 跟 $($n.Id) 打招呼(距离 $([int]$bestD)px)"
             return
         }
@@ -174,7 +235,7 @@ function Invoke-PetSocial {
         if ($bestD -lt ([Math]::Max($Win.Width, $Win.Height) * 0.62) -and ($now - $script:PetSocialLastAside) -gt 22) {
             $script:PetSocialLastAside = $now
             $side = if ($meX -lt $ncx) { -1.0 } else { 1.0 }
-            & $Hooks.MoveTo ($Win.Left + $side * $Win.Width * 1.05)
+            & $Hooks.MoveTo (Get-PetSocialTargetX -Win $Win -X ($Win.Left + $side * $Win.Width * 1.05))
             Write-PetLog "联动: 给 $($n.Id) 让个位置"
             return
         }
@@ -184,6 +245,7 @@ function Invoke-PetSocial {
             $script:PetSocialPlaying = $true
             $script:PetSocialPlayUntil = $now + 1.8
             & $Hooks.Play $n
+            Say-PetThing (Get-PetSocialLine 'Play') 2.4
             Write-PetLog "联动: 和 $($n.Id) 一起玩"
             return
         }
@@ -193,7 +255,8 @@ function Invoke-PetSocial {
             $script:PetSocialLastVisit = $now
             $side = if ($meX -lt $ncx) { 1.0 } else { -1.0 }
             $tgt = $ncx - $Win.Width / 2.0 + $side * $Win.Width * 0.62
-            & $Hooks.MoveTo $tgt
+            & $Hooks.MoveTo (Get-PetSocialTargetX -Win $Win -X $tgt)
+            Say-PetThing (Get-PetSocialLine 'Visit') 2.6
             Write-PetLog "联动: 去 $($n.Id) 那边串门"
             return
         }
