@@ -1,7 +1,7 @@
 ﻿# =====================================================================
 #  三只桌宠联动模块  v2  (Desktop Pets Interop / Social)
 #  --------------------------------------------------------------------
-#  通信:命名共享内存 'DesktopPets.Interop.v2', 3 个槽位(各 48 字节)。
+#  通信:命名共享内存 'DesktopPets.Interop.v2', 4 个槽位(各 64 字节)。
 #        每只宠物只写自己的槽、读别人的槽, 用 TickCount 判断对方是否还活着。
 #        不需要服务进程; 谁在跑就跟谁联动, 一只在跑时完全不触发。
 #
@@ -26,8 +26,8 @@ try { Add-Type -AssemblyName System.IO.MemoryMappedFiles -ErrorAction Stop } cat
 $script:PetSocialMmfName = 'DesktopPets.Interop.v3'
 $script:PetSocialCapacity = 256
 $script:PetSocialSlotSize = 64
-$script:PetSocialIds = @{ 'gemini' = 0; 'deepseek' = 1; 'chatgpt' = 2 }
-$script:PetSocialNames = @{ 'gemini' = '小星星'; 'deepseek' = '小鲸鱼'; 'chatgpt' = '小花' }
+$script:PetSocialIds = @{ 'gemini' = 0; 'deepseek' = 1; 'chatgpt' = 2; 'claude' = 3 }
+$script:PetSocialNames = @{ 'gemini' = '小星星'; 'deepseek' = '小鲸鱼'; 'chatgpt' = '小花'; 'claude' = '小太阳' }
 $script:PetSocialBitAlive = 1
 $script:PetSocialBitPlay = 2
 $script:PetSocialBitSleep = 4
@@ -133,7 +133,7 @@ function Connect-PetSocial {
     $script:PetSocialTalkKind = $script:PetSocialTalkNone
     $script:PetSocialTalkTo = -1
     $script:PetSocialTalkStamp = 0
-    $script:PetSocialSeenSeq = @{ 0 = 0; 1 = 0; 2 = 0 }
+    $script:PetSocialSeenSeq = @{ 0 = 0; 1 = 0; 2 = 0; 3 = 0 }
     $script:PetSocialConvo = $null
     $script:PetSocialConvoUntil = -99.0
     $script:PetSocialPending = $null
@@ -147,7 +147,7 @@ function Connect-PetSocial {
     $script:PetSocialLastSorry = -99.0
     $script:PetSocialLastAngerDecay = 0.0
     Import-PetSocialLines -Defaults $Hooks.Lines -JsonPath $LinesPath | Out-Null
-    Write-PetLog "联动: 已连接 v2(槽位 $($script:PetSocialSelfIdx), 名字 $($script:PetSocialNames[$SelfId]))"
+    Write-PetLog "联动: 已连接 v3(槽位 $($script:PetSocialSelfIdx), 名字 $($script:PetSocialNames[$SelfId]))"
     return $true
 }
 
