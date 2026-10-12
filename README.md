@@ -1,5 +1,8 @@
 # Gemini 桌面小宠物 🐾✨
 
+> 📦 **免安装下载**：[Releases](https://github.com/qi-cluadld/GeminiPet/releases/latest) 下载 zip，解压后双击 `启动宠物.vbs` 即可（不用 clone、不用装任何运行库）。
+
+
 一只 Gemini 四角星小精灵,常驻在桌面角落:会漂浮、会眨眼、会自己蹦跶转圈,戳一下还会笑给你看。
 
 **零依赖**:只用 Windows 自带的 WPF + PowerShell,不用装 Python / Node / 任何运行库。
@@ -38,18 +41,33 @@
 
 ```powershell
 # 加大体型(0.7 / 1.0 / 1.4 都可以)
+
+> 📦 **免安装下载**：[Releases](https://github.com/qi-cluadld/GeminiPet/releases/latest) 下载 zip，解压后双击 `启动宠物.vbs` 即可（不用 clone、不用装任何运行库）。
+
 powershell -NoProfile -ExecutionPolicy Bypass -File GeminiPet.ps1 -Size 1.4
 
 # 重新渲染 12 张动作预览图到 preview\ 目录(也可直接双击 预览外观.bat)
+
+> 📦 **免安装下载**：[Releases](https://github.com/qi-cluadld/GeminiPet/releases/latest) 下载 zip，解压后双击 `启动宠物.vbs` 即可（不用 clone、不用装任何运行库）。
+
 powershell -NoProfile -ExecutionPolicy Bypass -File GeminiPet.ps1 -Preview .\preview
 
 # 渲染带透明通道的预览图(用来做图标)
+
+> 📦 **免安装下载**：[Releases](https://github.com/qi-cluadld/GeminiPet/releases/latest) 下载 zip，解压后双击 `启动宠物.vbs` 即可（不用 clone、不用装任何运行库）。
+
 powershell -NoProfile -ExecutionPolicy Bypass -File GeminiPet.ps1 -Preview .\preview -PreviewAlpha
 
 # 自检:跑 20 秒,自动把所有动作演一遍,检查有没有报错
+
+> 📦 **免安装下载**：[Releases](https://github.com/qi-cluadld/GeminiPet/releases/latest) 下载 zip，解压后双击 `启动宠物.vbs` 即可（不用 clone、不用装任何运行库）。
+
 powershell -NoProfile -ExecutionPolicy Bypass -File GeminiPet.ps1 -SelfTest 20
 
 # 允许开多只 / 允许点击时抢焦点(默认不抢)
+
+> 📦 **免安装下载**：[Releases](https://github.com/qi-cluadld/GeminiPet/releases/latest) 下载 zip，解压后双击 `启动宠物.vbs` 即可（不用 clone、不用装任何运行库）。
+
 powershell ... -File GeminiPet.ps1 -AllowMultiple
 powershell ... -File GeminiPet.ps1 -ActivateOnClick
 ```
