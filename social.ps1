@@ -145,6 +145,8 @@ function Connect-PetSocial {
     $script:PetSocialAnger = @{}
     $script:PetSocialAngryUntil = -99.0
     $script:PetSocialLastSorry = -99.0
+    $script:PetSocialLastTop = -99.0
+    $script:PetSocialHwnd = [IntPtr]::Zero
     $script:PetSocialLastAngerDecay = 0.0
     Import-PetSocialLines -Defaults $Hooks.Lines -JsonPath $LinesPath | Out-Null
     Write-PetLog "联动: 已连接 v3(槽位 $($script:PetSocialSelfIdx), 名字 $($script:PetSocialNames[$SelfId]))"
@@ -431,12 +433,28 @@ function Protect-PetOnScreen {
 }
 
 # ---------------------------------------------------------------- 主循环
+# ---------------------------------------------------------------- 保持置顶
+# 同为 topmost 的窗口(比如正在看的应用)会插到置顶层更上面, 这里每 2 秒把自己重新提到最前
+if (-not ('PetTopNative' -as [type])) {
+    Add-Type -Namespace PetTop -Name Native -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);'
+}
+function Assert-PetTopmost {
+    param($Win)
+    if (-not $script:PetSocialHwnd -or $script:PetSocialHwnd -eq [IntPtr]::Zero) {
+        try { $script:PetSocialHwnd = (New-Object System.Windows.Interop.WindowInteropHelper($Win)).Handle } catch { return }
+    }
+    if (-not $script:PetSocialHwnd -or $script:PetSocialHwnd -eq [IntPtr]::Zero) { return }
+    # HWND_TOPMOST, 不改位置/大小, 不激活(不抢焦点)
+    [void][PetTop.Native]::SetWindowPos($script:PetSocialHwnd, [IntPtr](-1), 0, 0, 0, 0, 0x13)
+}
+
 function Invoke-PetSocial {
     param([double]$Dt, $Win, $Hooks)
     if (-not $script:PetSocialReady) { return }
     $now = $script:T
     $script:PetSocialWin = $Win
     Protect-PetOnScreen -Win $Win -Hooks $Hooks | Out-Null
+    if (($now - $script:PetSocialLastTop) -gt 2.0) { $script:PetSocialLastTop = $now; Assert-PetTopmost -Win $Win }
     Update-PetSayState
     $busy = [bool](& $Hooks.Busy)
     $sleepy = [bool](& $Hooks.Sleepy)
