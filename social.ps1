@@ -147,6 +147,8 @@ function Connect-PetSocial {
     $script:PetSocialLastSorry = -99.0
     $script:PetSocialLastTop = -99.0
     $script:PetSocialHwnd = [IntPtr]::Zero
+    $script:PetBattleState = 0; $script:PetBattleHp = 100; $script:PetBattleSeq = 0; $script:PetBattleDmg = 0
+    $script:PetBattleWith = ''; $script:PetBattleNextAt = 0.0; $script:PetBattleSeen = @{}; $script:PetBattleEndAt = 0.0; $script:PetBattleCooldown = -999.0
     $script:PetSocialLastAngerDecay = 0.0
     Import-PetSocialLines -Defaults $Hooks.Lines -JsonPath $LinesPath | Out-Null
     Write-PetLog "联动: 已连接 v3(槽位 $($script:PetSocialSelfIdx), 名字 $($script:PetSocialNames[$SelfId]))"
@@ -173,6 +175,10 @@ function Publish-PetSocialState {
         $script:PetSocialAcc.Write($b + 36, $script:PetSocialTalkStamp)
         $script:PetSocialAcc.Write($b + 40, $script:PetSocialTopicIdx)
         $script:PetSocialAcc.Write($b + 44, $script:PetSocialTopicStamp)
+        $script:PetSocialAcc.Write($b + 48, [int]$script:PetBattleState)
+        $script:PetSocialAcc.Write($b + 52, [int]$script:PetBattleHp)
+        $script:PetSocialAcc.Write($b + 56, [int]$script:PetBattleSeq)
+        $script:PetSocialAcc.Write($b + 60, [int]$script:PetBattleDmg)
     } catch { }
 }
 
@@ -195,12 +201,17 @@ function Get-PetSocialNeighbors {
             $tt = $script:PetSocialAcc.ReadInt32($b + 32)
             $tst = $script:PetSocialAcc.ReadInt32($b + 36)
             $tid = $script:PetSocialAcc.ReadInt32($b + 40)
+            $btl = $script:PetSocialAcc.ReadInt32($b + 48)
+            $bhp = $script:PetSocialAcc.ReadInt32($b + 52)
+            $bseq = $script:PetSocialAcc.ReadInt32($b + 56)
+            $bdmg = $script:PetSocialAcc.ReadInt32($b + 60)
         } catch { continue }
         if ([Math]::Abs($now - $ts) -gt $script:PetSocialMaxAgeMs -or $w -le 0 -or $h -le 0) { continue }
         $list += @{
             Id = $kv.Key; Index = $kv.Value; X = $x; Y = $y; W = $w; H = $h; Flags = $fl
             Age = [Math]::Abs($now - $ts); TalkKind = $tk; TalkSeq = $tq; TalkTo = $tt
             TalkStamp = $tst; TalkAge = [Math]::Abs($now - $tst); TopicIdx = $tid
+            Battle = $btl; BattleHp = $bhp; BattleSeq = $bseq; BattleDmg = $bdmg
         }
     }
     return $list
@@ -433,6 +444,75 @@ function Protect-PetOnScreen {
 }
 
 # ---------------------------------------------------------------- 主循环
+# ---------------------------------------------------------------- 对战(回合制)
+# 右键菜单用: 挑战离自己最近的那只
+function Invoke-PetSocialChallenge {
+    if (-not $script:PetSocialReady) { return }
+    $ns = Get-PetSocialNeighbors
+    if (-not $ns -or $ns.Count -eq 0) {
+        Say-PetSocialTalk -Kind 'Idle' -ToId $null -KindCode $script:PetSocialTalkNone 2.4 | Out-Null
+        Write-PetLog '对战: 附近没有别的宠物, 打不起来'
+        return
+    }
+    $w = $script:PetSocialWin
+    $mx = $w.Left + $w.Width / 2.0; $my = $w.Top + $w.Height / 2.0
+    $best = $null; $bd = 1e9
+    foreach ($c in $ns) {
+        $cx = $c.X + $c.W / 2.0; $cy = $c.Y + $c.H / 2.0
+        $d = [Math]::Sqrt(($cx - $mx) * ($cx - $mx) + ($cy - $my) * ($cy - $my))
+        if ($d -lt $bd) { $bd = $d; $best = $c }
+    }
+    if ($best) { Write-PetLog "对战: 手动挑战 $($best.Id)(距离 $([int]$bd)px)"; Start-PetBattle -N $best -Now $script:T }
+}
+function Reset-PetBattle {
+    $script:PetBattleState = 0; $script:PetBattleHp = 100; $script:PetBattleSeq = 0
+    $script:PetBattleDmg = 0; $script:PetBattleWith = ''; $script:PetBattleSeen = @{}; $script:PetBattleEndAt = 0.0
+}
+function Start-PetBattle {
+    param($N, [double]$Now)
+    $script:PetBattleState = 1; $script:PetBattleHp = 100; $script:PetBattleSeq = 0; $script:PetBattleDmg = 0
+    $script:PetBattleWith = $N.Id; $script:PetBattleNextAt = $Now + 1.2; $script:PetBattleEndAt = $Now + 45
+    Say-PetSocialTalk -Kind 'Challenge' -ToId $N.Id -KindCode $script:PetSocialTalkNone 2.6 | Out-Null
+    Write-PetLog "对战: 向 $($N.Id) 发起挑战(双方各 100 血)"
+}
+function Update-PetBattle {
+    param($N, [double]$Now)
+    if ($script:PetBattleState -eq 0) { return $false }
+    if ($Now -gt $script:PetBattleEndAt) { Write-PetLog "对战: 时限到, 平局"; Reset-PetBattle; return $false }
+    if (-not $N) { Reset-PetBattle; return $false }
+    $seen = 0
+    if ($script:PetBattleSeen.ContainsKey($N.Index)) { $seen = $script:PetBattleSeen[$N.Index] }
+    if ($N.BattleSeq -gt $seen -and $N.Battle -ge 1 -and $N.BattleDmg -gt 0) {
+        $script:PetBattleSeen[$N.Index] = $N.BattleSeq
+        $script:PetBattleHp = [Math]::Max(0, $script:PetBattleHp - $N.BattleDmg)
+        if ($script:PetSocialHooks.Angry) { try { & $script:PetSocialHooks.Angry $N } catch { } }
+        Say-PetSocialTalk -Kind 'Hurt' -ToId $N.Id -KindCode $script:PetSocialTalkNone 2.0 | Out-Null
+        Write-PetLog "对战: 被 $($N.Id) 打掉 $($N.BattleDmg) 血, 剩 $($script:PetBattleHp)"
+        if ($script:PetBattleHp -le 0) {
+            $script:PetBattleState = 2
+            Say-PetSocialTalk -Kind 'Lose' -ToId $N.Id -KindCode $script:PetSocialTalkNone 2.8 | Out-Null
+            Write-PetLog "对战: 输给 $($N.Id) 了"
+            return $true
+        }
+    }
+    if ($N.Battle -eq 2 -and $script:PetBattleState -eq 1) {
+        Say-PetSocialTalk -Kind 'Win' -ToId $N.Id -KindCode $script:PetSocialTalkNone 2.8 | Out-Null
+        if ($script:PetSocialHooks.Play) { try { & $script:PetSocialHooks.Play $N } catch { } }
+        Write-PetLog "对战: 赢了 $($N.Id)!"
+        $script:PetBattleEndAt = $Now + 1.5
+        return $true
+    }
+    if ($script:PetBattleState -eq 2) { return $false }
+    if ($Now -ge $script:PetBattleNextAt) {
+        $script:PetBattleNextAt = $Now + (Rand 1.1 1.7)
+        $script:PetBattleSeq++
+        $script:PetBattleDmg = [int](Rand 9 19)
+        if ($script:PetSocialHooks.Play) { try { & $script:PetSocialHooks.Play $N } catch { } }
+        Say-PetSocialTalk -Kind 'Attack' -ToId $N.Id -KindCode $script:PetSocialTalkNone 2.0 | Out-Null
+        Write-PetLog "对战: 出手! 对 $($N.Id) 造成 $($script:PetBattleDmg) 伤害"
+    }
+    return $true
+}
 # ---------------------------------------------------------------- 保持置顶
 # 同为 topmost 的窗口(比如正在看的应用)会插到置顶层更上面, 这里每 2 秒把自己重新提到最前
 if (-not ('PetTopNative' -as [type])) {
@@ -448,11 +528,55 @@ function Assert-PetTopmost {
     [void][PetTop.Native]::SetWindowPos($script:PetSocialHwnd, [IntPtr](-1), 0, 0, 0, 0, 0x13)
 }
 
+# ---------------------------------------------------------------- 老系统兼容(Win7 SP1 / 8.1)
+# 虚拟机没装 VMware Tools 时 WPF 往往是软件渲染(Tier 0); 老系统上主动降级, 保证能跑
+function Enable-PetCompatMode {
+    $script:PetCompatLegacy = $false
+    try { if ([Environment]::OSVersion.Version.Major -lt 10) { $script:PetCompatLegacy = $true } } catch { }
+    $script:PetCompatTier = 2
+    try {
+        Add-Type -AssemblyName PresentationCore -ErrorAction SilentlyContinue
+        $script:PetCompatTier = [int][System.Windows.Media.RenderCapability]::Tier
+    } catch { }
+    if ($env:PET_COMPAT_FORCE_SOFTWARE -eq '1') { $script:PetCompatTier = 0 }
+    if ($script:PetCompatTier -le 0) {
+        # 没有硬件加速 -> 强制软件渲染, 避免窗口空白; 帧率也降一点
+        try { [System.Windows.Media.RenderOptions]::ProcessRenderMode = [System.Windows.Interop.RenderMode]::SoftwareOnly } catch { }
+        $script:PetCompatSoftware = $true
+        $script:PetCompatTargetMs = 50
+    } else { $script:PetCompatSoftware = $false; $script:PetCompatTargetMs = 33 }
+    $script:PetCompatMsg = ("兼容模式: OS " + [Environment]::OSVersion.Version.ToString() + ", WPF Tier " + $script:PetCompatTier + $(if ($script:PetCompatSoftware) { " -> 软件渲染" } else { "" }) + $(if ($script:PetCompatLegacy) { ", 老系统保守模式" } else { "" }))
+}
+Enable-PetCompatMode
+
+# 软件渲染时真正降帧率: 不用知道定时器叫什么, 直接在脚本作用域里找 DispatcherTimer
+function Set-PetFrameRate {
+    param([int]$Ms)
+    $n = 0
+    try {
+        foreach ($v in (Get-Variable -Scope Script -ErrorAction SilentlyContinue)) {
+            $val = $null
+            try { $val = $v.Value } catch { continue }
+            if ($val -is [System.Windows.Threading.DispatcherTimer]) {
+                $val.Interval = [TimeSpan]::FromMilliseconds($Ms)
+                $n++
+            }
+        }
+    } catch { }
+    return $n
+}
+
 function Invoke-PetSocial {
     param([double]$Dt, $Win, $Hooks)
     if (-not $script:PetSocialReady) { return }
     $now = $script:T
     $script:PetSocialWin = $Win
+    if (-not $script:PetCompatApplied) {
+        $script:PetCompatApplied = $true
+        try { if ($script:PetCompatMsg) { Write-PetLog $script:PetCompatMsg } } catch { }
+        $c = Set-PetFrameRate -Ms $script:PetCompatTargetMs
+        try { Write-PetLog ("目标帧率 " + [math]::Round(1000.0 / $script:PetCompatTargetMs) + " fps, 已把刷新间隔调成 " + $script:PetCompatTargetMs + " ms (命中 " + $c + " 个定时器)") } catch { }
+    }
     Protect-PetOnScreen -Win $Win -Hooks $Hooks | Out-Null
     if (($now - $script:PetSocialLastTop) -gt 2.0) { $script:PetSocialLastTop = $now; Assert-PetTopmost -Win $Win }
     Update-PetSayState
@@ -501,6 +625,7 @@ function Invoke-PetSocial {
     $script:PetSocialDecT = $now
     $theyPlay = ($n.Flags -band $script:PetSocialBitPlay) -ne 0
 
+    if (Update-PetBattle -N $n -Now $now) { return }
     if (Update-PetSocialTalk -N $n -Now $now) { return }
 
     # 情绪: 生气值慢慢消退
@@ -556,6 +681,14 @@ function Invoke-PetSocial {
     if ($busy -or $sleepy) { return }
     if ($script:PetSocialConvo) { return }
 
+    if ($near -and $script:PetBattleState -eq 0) {
+        $bchance = if ($env:PET_BATTLE_FORCE -eq '1') { 1.0 } else { 0.04 }
+        if ($now -gt ($script:PetBattleCooldown + 120) -and $script:Rng.NextDouble() -lt $bchance) {
+            $script:PetBattleCooldown = $now
+            Start-PetBattle -N $n -Now $now
+            return
+        }
+    }
     if ($near) {
         if ($bestD -lt ([Math]::Max($Win.Width, $Win.Height) * 0.62) -and ($now - $script:PetSocialLastAside) -gt 22) {
             $script:PetSocialLastAside = $now

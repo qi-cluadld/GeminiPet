@@ -1033,6 +1033,11 @@ foreach ($opt in @(@('小', 0.7), @('中', 1.0), @('大', 1.4))) {
 [void]$menu.Items.Add((New-MenuItem '🎈  换个位置' { $script:IdleSince = $script:T; Start-Action 'wander' }))
 [void]$menu.Items.Add((New-Object System.Windows.Controls.Separator))
 [void]$menu.Items.Add((New-MenuItem '❌  退出' { $win.Close() }))
+[void]$menu.Items.Add((New-Object System.Windows.Controls.Separator))
+$miFight = New-Object System.Windows.Controls.MenuItem
+$miFight.Header = '挑战最近的宠物  ⚔'
+$miFight.Add_Click({ Invoke-PetSocialChallenge })
+[void]$menu.Items.Add($miFight)
 $root.ContextMenu = $menu
 
 # ---------------------------------------------------------------- 鼠标交互
